@@ -1,0 +1,12 @@
+*.so
+*.whl
+*.egg
+*.pyc
+__pycache__/
+build/
+build_ix/
+*.zip
+node_feat.*
+*.log
+*.egg-info/
+dist/
