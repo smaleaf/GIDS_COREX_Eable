@@ -52,7 +52,7 @@ def load_graph_data(dataset_name, data_dir):
         graph, labels = d[0]
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
-    return graph, labels
+    return graph, labels, d
 
 
 def train(args):
@@ -62,7 +62,7 @@ def train(args):
     # Load data
     # ============================================================
     print(f"[Train-IX] Loading dataset: {args.dataset}")
-    graph, labels = load_graph_data(args.dataset, args.data_dir)
+    graph, labels, dataset = load_graph_data(args.dataset, args.data_dir)
 
     n_classes = (labels.max() + 1).item()
     n_feats = graph.ndata["feat"].shape[1]
@@ -71,7 +71,7 @@ def train(args):
     # Split
     idx_split = None
     if args.dataset == "ogbn-products":
-        split_idx = d.get_idx_split()
+        split_idx = dataset.get_idx_split()
         train_idx = split_idx["train"]
         val_idx = split_idx["valid"]
         test_idx = split_idx["test"]

@@ -120,10 +120,36 @@ mkdir -p /root/.ogb/dataset/nodeproppred
 cd /root/.ogb/dataset/nodeproppred
 
 aria2c -x 16 -s 16 http://snap.stanford.edu/ogb/data/nodeproppred/products.zip
-unzip products.zip
 ```
 
-OGB 检测到缓存目录已存在则跳过下载。
+解压数据集。注意 `unzip` 可能未安装，推荐用 Python 自带 zipfile 模块：
+
+```bash
+python3 -c "
+import zipfile, os, shutil
+z = '/root/.ogb/dataset/nodeproppred/products.zip'
+d = '/tmp/ogb_extract'
+os.makedirs(d, exist_ok=True)
+with zipfile.ZipFile(z) as zf:
+    zf.extractall(d)
+# 重命名 products -> ogbn-products（OGB 库要求）
+shutil.move(d + '/products', d + '/ogbn-products')
+print('Extracted to', d + '/ogbn-products')
+"
+```
+
+将解压后的数据放到 OGB 期望的目录（或直接指定 `--data_dir`）：
+
+```bash
+# 方式 A：复制到 GIDS data 目录（run.sh 默认路径）
+mkdir -p /root/.cursor/knowledge-base/20-Projects/GIDS_enable/cufile/GIDS/data
+cp -r /tmp/ogb_extract/ogbn-products /root/.cursor/knowledge-base/20-Projects/GIDS_enable/cufile/GIDS/data/
+
+# 方式 B：通过环境变量指定数据目录
+DATA_DIR=/tmp/ogb_extract bash run.sh train
+```
+
+> ⚠️ **Docker 环境下 `/root/.ogb` 可能是只读的**：此时用 Python zipfile + `/tmp` 目录作为临时解压路径。OGB 检测到缓存目录已存在则跳过下载。
 
 ---
 

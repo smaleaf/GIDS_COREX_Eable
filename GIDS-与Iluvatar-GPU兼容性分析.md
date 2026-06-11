@@ -188,11 +188,12 @@ GIDS 的核心能力来自 BaM 框架的以下特性：
 | 能力 | NVIDIA 依赖 | Iluvatar 可行性 |
 |------|-----------|----------------|
 | GPU→NVMe P2P DMA | nvidia-peermem 内核模块 + GPU BAR 空间映射 | ✅ ixdriver 支持 cuFile API ([ixnvcufile.h](file:///home/corex/sw_home_1/sw_home/sdk/ixdriver/cufileapi/ixnvcufile.h)), 含 `ixdrvFileRead/Write` + `ixdrvFileBufRegister` + RDMA |
+| GDS 内核驱动 | `nvidia-fs.ko` + `/dev/nvidia-fs` | ✅ `itrfs.ko`（Iluvatar corex GDS driver v4.5.0）+ `/dev/itrfs`。源码位于 [ixdriver/kmd/itr_fs/](file:///home/corex/sw_home_1/sw_home/sdk/ixdriver/kmd/itr_fs/) |
 | GPU 端 MMIO 写 NVMe 寄存器 | GPU 能访问 PCIe 设备的 MMIO 空间 | ✅ ixdriver 支持 P2P (`ixDeviceEnablePeerAccess`, `ixDeviceGetP2PAttribute`) |
 | CUDA Unified Memory | cudaHostAllocMapped | ✅ `ixHostAllocMapped` 已支持 |
 | GPU 端内存映射文件 | 通过 BaM 框架实现 | ⚠️ BaM 使用裸 NVMe 命令而非 cuFile，需适配 |
 
-> **关键发现：** Iluvatar 已支持 **cuFile (GPU Direct Storage)** API，含 `ixdrvFileRead`、`ixdrvFileWrite`、`ixdrvFileBufRegister`、`ixdrvfileRDMAInfo` 等。理论上可以直接用 cuFile 替代 BaM 的裸 NVMe 访问方式，大幅简化移植。
+> **关键发现：** Iluvatar 已支持 **cuFile (GPU Direct Storage)** 完整技术栈：用户态 `libcufile.so` + 内核驱动 `itrfs.ko` + 设备节点 `/dev/itrfs`。代码使用标准 cuFile API 即可利用 GDS 加速，无需移植 BaM 框架。
 
 ---
 

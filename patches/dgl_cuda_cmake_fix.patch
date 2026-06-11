@@ -1,0 +1,16 @@
+--- a/cmake/modules/CUDA.cmake
++++ b/cmake/modules/CUDA.cmake
+@@ -236,8 +236,11 @@
+ 
+   target_compile_definitions(dgl ${PRIVATE_OR_PUBLIC} DGL_USE_CUDA)
+ 
+-  string(REGEX REPLACE "[ \\t\\n\\r]" "," CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
+-  list(APPEND CUDA_NVCC_FLAGS "-Xcompiler" "${CXX_HOST_FLAGS}")
++  # FIXME(Corex): ixc (clang++) does not support comma-separated -Xcompiler flags.
++  # Use space-separated individual flags instead.
++  string(REGEX REPLACE "[ \\t\\n\\r]" " " CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
++  separate_arguments(CXX_HOST_FLAGS_LIST UNIX_COMMAND "${CXX_HOST_FLAGS}")
++  list(APPEND CUDA_NVCC_FLAGS ${CXX_HOST_FLAGS_LIST})
+ 
+   # Ensure that CUDA code is compiled with -Xcompiler -fopenmp so that thrust
+   # can find the right header.

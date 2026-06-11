@@ -244,20 +244,19 @@ cmd_train() {
         --epochs "${EPOCHS}"
         --batch_size "${BATCH_SIZE}"
         --num_ssd "${NUM_SSD}"
-        --page_size "${PAGE_SIZE}"
         --cache_size "${CACHE_SIZE}"
-        --fanout "${FANOUT}"
+        --fanout "${FANOUT},${FANOUT},${FANOUT}"
         --n_layers "${N_LAYERS}"
         --n_hidden "${N_HIDDEN}"
         --lr "${LR}"
         --dropout "${DROPOUT}"
         --num_workers "${NUM_WORKERS}"
         --cpu_buffer_size "${CPU_BUFFER_SIZE}"
-        --accumulator "${ACCUMULATOR}"
         --wb_size "${WB_SIZE}"
         --pad_factor "${PAD_FACTOR}"
         --file_paths "${FEAT_FILE}"
     )
+    [ "${ACCUMULATOR}" = "True" ] && cmd+=(--accumulator)
 
     log_info "执行: ${cmd[*]}"
     echo ""
@@ -280,7 +279,7 @@ cmd_all() {
     log_info "=============================================="
     echo ""
 
-    cmd_setup
+    cmd_deps
     echo ""
     cmd_verify
     echo ""
@@ -294,6 +293,186 @@ cmd_all() {
     fi
 
     cmd_train
+}
+
+# ============================================================
+# deps - 一键安装所有依赖
+# ============================================================
+cmd_deps() {
+    log_info "========== 一键安装依赖 =========="
+    activate_env
+
+    local COREX_SDK_URL="http://sw.iluvatar.ai/download/corex/daily_packages/ivcore11/x86_64/20260524/daily-20260524-ivcore11.yaml"
+    local COREX_SRC="/home/corex/sw_home_1/sw_home/sdk/ixdriver"
+    local COREX_INSTALLED="/home/corex/sw_home_1/sw_home/local/corex"
+    local DGL_SRC="/tmp/dgl_corex"
+    local DGL_VER="1.1.3"
+
+    # ----------------------------------------------------------
+    # 步骤 1: Corex SDK 包
+    # ----------------------------------------------------------
+    log_info "[1/6] 安装 Corex SDK 包..."
+    local sdk_pkgs=(ixdriver ixinfer ixpti ixblas ixdnn ixsparse ixfft ixccl ixattention ixsolver ixml)
+    for pkg in "${sdk_pkgs[@]}"; do
+        if repo-manager dl "$pkg" -f "$COREX_SDK_URL" 2>/dev/null; then
+            log_ok "$pkg"
+        else
+            log_warn "$pkg 安装失败（可能已安装或网络问题）"
+        fi
+    done
+
+    # 验证 SDK 库
+    for lib in libcudart.so libcufile.so libcublas.so libcudnn.so; do
+        if find "${COREX_INSTALLED}/lib64" -name "$lib*" 2>/dev/null | grep -q .; then
+            log_ok "SDK 库: $lib"
+        else
+            log_warn "SDK 库缺失: $lib"
+        fi
+    done
+
+    # ----------------------------------------------------------
+    # 步骤 2: Python 包
+    # ----------------------------------------------------------
+    log_info "[2/6] 安装 Python 依赖..."
+    pip3 install --quiet pybind11 numpy 2>&1 | tail -1
+    pip3 install --quiet torchdata==0.7.1 2>&1 | tail -1
+    pip3 install --quiet dgl ogb 2>&1 | tail -1
+    log_ok "Python 依赖安装完成"
+
+    # ----------------------------------------------------------
+    # 步骤 3: 部署 Corex cooperative_groups.h 补丁 (meta_group_rank)
+    # ----------------------------------------------------------
+    log_info "[3/6] 检查 cooperative_groups.h (meta_group_rank 支持)..."
+    local CG_SRC="${COREX_SRC}/include/IX/ixrt/cooperative_groups.h"
+    local CG_DST="${COREX_INSTALLED}/include/cooperative_groups.h"
+
+    if [ -f "$CG_SRC" ] && grep -q "meta_group_rank" "$CG_SRC" 2>/dev/null; then
+        if [ -f "$CG_DST" ]; then
+            cp "$CG_DST" "${CG_DST}.bak_$(date +%Y%m%d_%H%M%S)"
+            log_info "已备份旧头文件"
+        fi
+        cp "$CG_SRC" "$CG_DST" 2>/dev/null || {
+            log_warn "无法写入 $CG_DST，尝试 sudo..."
+            sudo cp "$CG_SRC" "$CG_DST"
+        }
+        log_ok "cooperative_groups.h 已更新（含 meta_group_rank/meta_group_size）"
+    else
+        log_warn "未找到 SDK 源码中的 cooperative_groups.h 补丁"
+        log_warn "分支 SWPM-918-gids 未拉取或路径不对: $CG_SRC"
+        log_warn "DGL gpu_cache 编译将自动跳过"
+    fi
+
+    # ----------------------------------------------------------
+    # 步骤 4: 编译 DGL (Corex CUDA 版)
+    # ----------------------------------------------------------
+    log_info "[4/6] 编译 DGL v${DGL_VER} (Corex CUDA)..."
+    local DGL_BUILD_OK=false
+
+    if python3 -c "
+import dgl
+try:
+    g = dgl.rand_graph(10, 20).to('cuda:0')
+    print('CUDA_OK')
+except:
+    print('CPU_ONLY')
+" 2>&1 | grep -q "CUDA_OK"; then
+        log_ok "DGL 已是 CUDA 版，跳过编译"
+        DGL_BUILD_OK=true
+    fi
+
+    if [ "$DGL_BUILD_OK" = false ]; then
+        log_info "开始编译 DGL CUDA 版（约 10-20 分钟）..."
+
+        if [ ! -d "$DGL_SRC" ]; then
+            git clone --depth 1 --branch "v${DGL_VER}" \
+                https://github.com/dmlc/dgl.git "$DGL_SRC" 2>&1 | tail -1
+            cd "$DGL_SRC"
+            git submodule update --init --recursive 2>&1 | tail -3
+        else
+            cd "$DGL_SRC"
+        fi
+
+        # 修复 -Xcompiler 格式（ixc 不认逗号分隔）
+        if grep -q 'REGEX REPLACE.*","' cmake/modules/CUDA.cmake 2>/dev/null; then
+            log_info "修复 CUDA.cmake -Xcompiler 格式..."
+            cp cmake/modules/CUDA.cmake cmake/modules/CUDA.cmake.bak
+            sed -i 's/string(REGEX REPLACE "\[ \\t\\n\\r\]" "," CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")/string(REGEX REPLACE "[ \\t\\n\\r]" " " CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")\n  separate_arguments(CXX_HOST_FLAGS_LIST UNIX_COMMAND "${CXX_HOST_FLAGS}")\n  list(APPEND CUDA_NVCC_FLAGS ${CXX_HOST_FLAGS_LIST})/' cmake/modules/CUDA.cmake
+            sed -i '/list(APPEND CUDA_NVCC_FLAGS "-Xcompiler" "${CXX_HOST_FLAGS}")/d' cmake/modules/CUDA.cmake
+        fi
+
+        # 检查 cooperative_groups.h 是否支持 meta_group_rank
+        if ! grep -q "meta_group_rank" "${COREX_INSTALLED}/include/cooperative_groups.h" 2>/dev/null; then
+            log_warn "cooperative_groups.h 不含 meta_group_rank，禁用 gpu_cache"
+            if grep -q "Compile gpu_cache" CMakeLists.txt 2>/dev/null; then
+                sed -i '/Compile gpu_cache/,/endif(USE_CUDA)/s/^/#/' CMakeLists.txt
+            fi
+        fi
+
+        rm -rf build && mkdir build && cd build
+        cmake .. \
+            -DUSE_CUDA=ON \
+            -DUSE_OPENMP=ON \
+            -DCUDA_TOOLKIT_ROOT_DIR="${COREX_INSTALLED}" \
+            -DCUDA_NVCC_EXECUTABLE="${COREX_INSTALLED}/bin/ixc" \
+            -DBUILD_CPP_TEST=OFF 2>&1 | tail -3
+
+        make -j$(nproc) 2>&1 | tail -5
+
+        if [ -f "libdgl.so" ]; then
+            cd ../python
+            python3 setup.py install --user 2>&1 | tail -3
+            log_ok "DGL CUDA 版编译安装完成"
+        else
+            log_error "DGL 编译失败，请检查日志"
+            log_info "手动重试: cd $DGL_SRC/build && make -j\$(nproc)"
+        fi
+    fi
+
+    # ----------------------------------------------------------
+    # 步骤 5: 编译 IXFeatureStore
+    # ----------------------------------------------------------
+    log_info "[5/6] 编译 IXFeatureStore..."
+    cmd_setup
+
+    # ----------------------------------------------------------
+    # 步骤 6: 准备数据集
+    # ----------------------------------------------------------
+    log_info "[6/6] 准备数据集..."
+    local DATA_DST="${DATA_DIR}/ogbn_products"
+    if [ -d "$DATA_DST" ] && [ -d "${DATA_DST}/raw" ] && [ -d "${DATA_DST}/processed" ]; then
+        log_ok "数据集已就绪: $DATA_DST"
+    else
+        log_info "下载并解压数据集..."
+        mkdir -p "$DATA_DIR"
+
+        local ZIP_FILE="/root/.ogb/dataset/nodeproppred/products.zip"
+        if [ ! -f "$ZIP_FILE" ]; then
+            log_info "下载 products.zip (~1.38GB)..."
+            mkdir -p "$(dirname "$ZIP_FILE")"
+            if command -v aria2c &>/dev/null; then
+                aria2c -x 16 -s 16 \
+                    "http://snap.stanford.edu/ogb/data/nodeproppred/products.zip" \
+                    -d "$(dirname "$ZIP_FILE")"
+            else
+                wget -O "$ZIP_FILE" \
+                    "http://snap.stanford.edu/ogb/data/nodeproppred/products.zip"
+            fi
+        fi
+
+        python3 -c "
+import zipfile, os
+z = '$ZIP_FILE'
+d = '$DATA_DIR'
+with zipfile.ZipFile(z) as zf:
+    zf.extractall(d)
+os.rename(os.path.join(d, 'products'), os.path.join(d, 'ogbn_products'))
+print('OK:', os.listdir(d))
+"
+        log_ok "数据集解压完成: $DATA_DST"
+    fi
+
+    log_ok "========== 依赖安装完成 =========="
+    log_info "现在可以运行: bash run.sh train"
 }
 
 # ============================================================
@@ -317,11 +496,12 @@ cmd_help() {
     echo "用法:  bash run.sh <command> [args...]"
     echo ""
     echo "命令:"
-    echo "  setup          构建 IXFeatureStore C++ 模块"
+    echo "  deps           一键安装所有依赖（SDK + Python + DGL-CUDA + 数据集 + 编译）"
+    echo "  setup          仅编译 IXFeatureStore C++ 模块"
     echo "  verify         验证所有组件是否就绪"
     echo "  prepare-data   下载数据集并写入 SSD 特征文件"
     echo "  train          运行 GNN 训练"
-    echo "  all            一键执行: setup -> verify -> prepare-data -> train"
+    echo "  all            一键执行: deps -> verify -> train"
     echo "  clean          清理构建产物"
     echo "  help           显示此帮助信息"
     echo ""
@@ -344,6 +524,7 @@ cmd_help() {
 # 主入口
 # ============================================================
 case "${1:-help}" in
+    deps)         cmd_deps ;;
     setup)        cmd_setup ;;
     verify)       cmd_verify ;;
     prepare-data) cmd_prepare_data ;;

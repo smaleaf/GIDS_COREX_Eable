@@ -38,6 +38,9 @@ ixdrvFileRead/Write                     BaM bam_ptr<T> (移植)
      │                                        │
      ▼                                        ▼
 NVMe SSD                                NVMe SSD
+
+方案 A GDS 加速路径：
+  libcufile.so → ioctl(ITRFS_READ/WRITE) → itrfs.ko → nvme.ko → NVMe SSD
 ```
 
 ### 2.2 核心差异
@@ -54,7 +57,7 @@ NVMe SSD                                NVMe SSD
 | **性能** | 稍高延迟（过 kernel），吞吐相当 | 更低延迟（绕过 kernel） |
 | **稳定性** | 依赖成熟的 kernel NVMe 驱动 | 用户态驱动需要大量测试 |
 | **调试难度** | 低（标准文件 I/O） | 高（NVMe 协议级调试） |
-| **Iluvatar 兼容** | ✅ 已验证支持（ixnvcufile.h） | ⚠️ 需确认 /dev/libnvmX 设备支持 |
+| **Iluvatar 兼容** | ✅ 已验证：`libcufile.so` + `itrfs.ko`（GDS 内核驱动）+ `/dev/itrfs` | ⚠️ 需确认 /dev/libnvmX 设备支持 |
 
 ### 2.3 API 对照
 
