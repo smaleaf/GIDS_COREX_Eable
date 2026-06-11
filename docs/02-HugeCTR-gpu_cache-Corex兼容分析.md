@@ -140,3 +140,4 @@ GIDS 使用自己的 `IXFeatureStore`（cuFile → NVMe SSD），不依赖 HugeC
 - [CUDA cooperative_groups 文档](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cooperative-groups)
 - [DGL GPU Cache PR](https://github.com/dmlc/dgl/pull/6694)
 - [NVIDIA Merlin 文档](https://developer.nvidia.com/nvidia-merlin/hugectr)
+- **PTX 指令级分析：** [03-gpu_cache-PTX指令清单与Corex兼容状态.md](./03-gpu_cache-PTX指令清单与Corex兼容状态.md)

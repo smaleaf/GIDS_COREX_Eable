@@ -14,7 +14,9 @@
 ├── docs/                          # 兼容分析文档
 │   ├── 00-Corex兼容库总览.md       # 本文
 │   ├── 01-DGL-Corex兼容分析.md     # DGL 编译兼容
-│   └── 02-HugeCTR-gpu_cache-Corex兼容分析.md  # GPU Cache 编译器兼容
+│   ├── 02-HugeCTR-gpu_cache-Corex兼容分析.md  # GPU Cache 编译器兼容
+│   ├── 03-gpu_cache-PTX指令清单与Corex兼容状态.md  # PTX 指令级分析
+│   └── 04-Corex-ivcorex内建指令与copylib用法分析.md  # Corex builtin 指令分析
 └── patches/                       # 补丁文件
 ```
 
