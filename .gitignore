@@ -11,18 +11,29 @@ node_feat.*
 *.egg-info/
 dist/
 
-# 数据集与大型数据文件
+# ── 数据集与大型数据文件 ─────────────────────
 GIDS/data/
+GIDS/*.npy
+GIDS/*.bin
+GIDS/*.raw
+GIDS/products.*
 *.npy
 *.bin
 *.raw
 
-# 二进制包
-*.whl
+# ── 编译产物 ─────────────────────────────────
+corex_enable_bam/code/test_io_memory
+corex_enable_bam/code/*.o
 
-# dgl 编译产物与第三方依赖
+# ── dgl 编译产物与第三方依赖 ──────────────────
 dgl/build/
 dgl/third_party/
 
-# 隐藏的内嵌 git 历史（不入库）
+# ── 隐藏的内嵌 git 历史（不入库）────────────
 .git_bak/
+
+# ── 避免意外提交超大文件（GitHub 100MB 限制） ─
+# 超过 50MB 的文件建议用 Git LFS
+*.csv.gz
+*.nc
+*.pack
