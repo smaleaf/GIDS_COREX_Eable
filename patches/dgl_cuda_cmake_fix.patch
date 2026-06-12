@@ -1,16 +1,21 @@
 --- a/cmake/modules/CUDA.cmake
 +++ b/cmake/modules/CUDA.cmake
-@@ -236,8 +236,11 @@
- 
-   target_compile_definitions(dgl ${PRIVATE_OR_PUBLIC} DGL_USE_CUDA)
- 
--  string(REGEX REPLACE "[ \\t\\n\\r]" "," CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
+@@ -223,11 +223,14 @@ macro(dgl_config_cuda out_variable)
+   # 0. Add host flags
+   message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
+-  string(REGEX REPLACE "[ \t\n\r]" "," CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
++  string(STRIP "${CMAKE_CXX_FLAGS}" CXX_HOST_FLAGS_STRIPPED)
++  string(REGEX REPLACE "[ \t\n\r]+" ";" CXX_HOST_FLAGS_LIST "${CXX_HOST_FLAGS_STRIPPED}")
+   if(MSVC AND NOT USE_MSVC_MT)
+-    string(CONCAT CXX_HOST_FLAGS ${CXX_HOST_FLAGS} ",/MD")
++    list(APPEND CXX_HOST_FLAGS_LIST "/MD")
+   endif()
 -  list(APPEND CUDA_NVCC_FLAGS "-Xcompiler" "${CXX_HOST_FLAGS}")
-+  # FIXME(Corex): ixc (clang++) does not support comma-separated -Xcompiler flags.
-+  # Use space-separated individual flags instead.
-+  string(REGEX REPLACE "[ \\t\\n\\r]" " " CXX_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
-+  separate_arguments(CXX_HOST_FLAGS_LIST UNIX_COMMAND "${CXX_HOST_FLAGS}")
-+  list(APPEND CUDA_NVCC_FLAGS ${CXX_HOST_FLAGS_LIST})
++  foreach(flag ${CXX_HOST_FLAGS_LIST})
++    list(APPEND CUDA_NVCC_FLAGS "-Xcompiler" "${flag}")
++  endforeach()
++  # Corex: clang++ doesn't bundle omp.h; add GCC's OpenMP include path
++  list(APPEND CUDA_NVCC_FLAGS "-Xcompiler" "-I/usr/lib/gcc/x86_64-linux-gnu/11/include")
  
-   # Ensure that CUDA code is compiled with -Xcompiler -fopenmp so that thrust
-   # can find the right header.
+   # 1. Add arch flags
+   dgl_select_nvcc_arch_flags(NVCC_FLAGS_ARCH)

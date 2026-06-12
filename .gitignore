@@ -10,3 +10,19 @@ node_feat.*
 *.log
 *.egg-info/
 dist/
+
+# 数据集与大型数据文件
+GIDS/data/
+*.npy
+*.bin
+*.raw
+
+# 二进制包
+*.whl
+
+# dgl 编译产物与第三方依赖
+dgl/build/
+dgl/third_party/
+
+# 隐藏的内嵌 git 历史（不入库）
+.git_bak/

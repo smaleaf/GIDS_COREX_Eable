@@ -9,11 +9,11 @@
 
 > 本文汇总当前 GIDS 适配 Iluvatar Corex / IX 平台的 cuFile 方案：为什么不继续移植 BaM 裸 NVMe 路径、为什么必须适配 Corex 版本、每个组件在新架构中的位置和角色、数据如何从 DGL 采样流入 `IXFeatureStore` 并最终通过 `libcufile.so` 访问 NVMe，以及当前实现、验证状态和后续风险点。
 >
-> **2026-06-11 最新进展：**
-> - `itrfs.ko` 已在宿主机加载，`/dev/itrfs` 已就绪，GDS 加速路径理论上可用。
-> - `cooperative_groups.h` SWPM-918-gids 补丁已正式部署（ixcc SDK 重新编译安装），`meta_group_rank()` 实现绕过 `%laneid`，DGL gpu_cache 重新编译验证窗口已开启。
-> - `itrfs.ko` 从源码重编译时遇到 kernel headers 缺少 `stdarg.h` 的新问题（预编译 `.ko` 不受影响）。
-> - `IX-ML` 版本（4.4.0）与 `Driver`（4.5.0）存在小版本差异，需关注 ML 库同步升级。
+> **2026-06-12 最新进展：**
+> - **DGL Corex 版正在编译**：经过 6 个兼容性修复（`-Xcompiler` 格式、`fp16.cuh` 重定义、CCCL 禁用、`omp.h` 路径、`array_iterator.h`、gpu_cache 禁用），DGL v1.1.3 主库在 Corex 平台逐步编译通过。
+> - **gpu_cache 确认禁用**：`cooperative_groups.h` 补丁绕过了 API 层的 `%laneid`，但编译器后端（LLVM llc）在翻译 `tiled_partition` 等 warp 原语时仍会生成 `%laneid` PTX 寄存器引用，**不是源码级问题**。短期内 gpu_cache 禁用，不影响 GIDS 核心功能。
+> - **`itrfs.ko` 已加载**，`/dev/itrfs` 已就绪，GDS 加速路径可用。
+> - **`cooperative_groups.h` SWPM-918-gids 补丁已部署**，`meta_group_rank()` 绕过 `%laneid` 仅对 API 调用层有效，不解决编译器后端问题。
 
 ```mermaid
 flowchart TB
@@ -448,15 +448,13 @@ Corex cuFile 版：
 必要项：
 
 - 使用 Corex 4.5.0 对齐的 PyTorch wheel。
-- DGL 需要源码编译 CUDA 版，不能只装 CPU 版。
-- 修复 DGL 旧式 `CUDA.cmake` 中 `-Xcompiler` 逗号分隔问题（补丁已存于 `patches/dgl_cuda_cmake_fix.patch`）。
-- Corex SDK 头文件需包含 `cooperative_groups::meta_group_rank()` / `meta_group_size()`（**2026-06-11 已正式部署**）。
-- HugeCTR `gpu_cache`：之前因 `%laneid` 阻塞而禁用；新的 `cooperative_groups.h` 实现绕过了 `%laneid`，**建议重新尝试编译 gpu_cache**，若通过可实现 GPU HBM + NVMe 的两级缓存。
-
-注意：
-
-- 禁用 DGL 内置 HugeCTR `gpu_cache` 不影响 GIDS 当前 `IXFeatureStore` 功能。
-- `cooperative_groups.h` 补丁实现（`thread_rank() / numThreads`）是纯 C++ 计算，不依赖编译器后端 warp 寄存器，理论上规避了 `%laneid` 问题。
+- DGL 需要源码编译 CUDA 版，不能只装 CPU 版。编译脚本：`/root/GIDS_cufile/GIDS/build_dgl_corex.sh`。
+- 修复 DGL 旧式 `CUDA.cmake` 中 `-Xcompiler` 逗号分隔问题（补丁已存于 `patches/dgl_cuda_cmake_fix.patch`，改为逐个 `-Xcompiler` 参数）。
+- 修复 `fp16.cuh` 中 `__half` 运算符重定义（Corex 编译器已原生提供，添加 `!defined(__IXCC__)` 守卫跳过 DGL 定义）。
+- 修复 `array_iterator.h` 中 `CUB_INLINE` 宏（只在 `__CUDA_ARCH__` 下展开为 `__host__ __device__`，Corex 定义 `__IXCC__` 而非 `__CUDA_ARCH__`，添加 `|| defined(__IXCC__)` 条件）。
+- 禁用 CCCL 自带的 cub/thrust/libcudacxx（其 `libcudacxx` 的 C++20 concept fallback 使用变参函数，Corex device code 不支持；改用 Corex SDK 自带的 cub/thrust）。
+- 添加 GCC OpenMP include 路径（Corex `clang++` 未自带 `omp.h`，自动检测 `gcc -print-file-name=include` 并传入 `-Xcompiler -I<path>`）。
+- HugeCTR `gpu_cache`：**已确认禁用**。`%laneid` 是编译器后端（LLVM llc）问题，不是源码级问题。`cooperative_groups.h` 补丁只解决了 API 层的 `meta_group_rank()` 缺失，但 `tiled_partition` 在编译器后端翻译时仍会生成 `%laneid` PTX 寄存器引用。**短期禁用 gpu_cache 不影响 GIDS 当前 `IXFeatureStore` 功能**。
 
 ---
 
@@ -548,21 +546,27 @@ FEAT_FILE=/mnt/nvme0/node_feat.bin bash run.sh prepare-data
 
 ## 十、当前验证状态
 
-> **最后更新：** 2026-06-11 21:49
+> **最后更新：** 2026-06-12
 
 已完成：
 
-- `IXFeatureStore` 核心代码移植，编译产物 `IXFeatureStore.cpython-310-x86_64-linux-gnu.so`（290 KB，2026-06-11 18:54），pybind11 模块可加载，`IXFeatureStore_float`/`IXFeatureStore_long` 两个模板类均可用。
+- `IXFeatureStore` 核心代码移植，编译产物 `IXFeatureStore.cpython-310-x86_64-linux-gnu.so`（290 KB），pybind11 模块可加载。
 - Corex PyTorch 使用 `cuda:0` 验证通过。
 - `libcudart.so`、`libcufile.so`、`libcupti.so`、`libcuinfer.so.7` 等依赖检查通过。
-- **`itrfs.ko` 已加载，`/dev/itrfs` 已就绪**：`lsmod | grep itrfs` 确认已加载（57344B），`/dev/itrfs` 设备节点存在（`crw-rw-rw- 237,0`），`dmesg` 输出 "Itrfs is ok."，GDS 加速路径在当前宿主机上已可用。
-- **`cooperative_groups.h` SWPM-918-gids 补丁已正式部署**：2026-06-11 ixcc SDK 重新编译并安装，`cooperative_groups.h` 已更新到已安装路径，`meta_group_rank()` 和 `meta_group_size()` 均已实现。新实现使用 `__internal::cta::thread_rank() / numThreads`，**不依赖 `%laneid` PTX 寄存器**，从代码层面规避了之前的编译器后端问题。
+- **`itrfs.ko` 已加载，`/dev/itrfs` 已就绪**，GDS 加速路径可用。
+- **`cooperative_groups.h` SWPM-918-gids 补丁已正式部署**。
+- **DGL v1.1.3 Corex CUDA 版编译通过**（2026-06-12），经过 5 个兼容性修复：
+  1. `-Xcompiler` 逗号分隔 → 逐个 `-Xcompiler` 参数
+  2. `fp16.cuh` `__half` 运算符重定义 → 跳过 `__IXCC__` 下的定义
+  3. CCCL cub/thrust/libcudacxx → 禁用，使用 Corex SDK 自带版本
+  4. `omp.h` 找不到 → 自动检测 GCC include 路径
+  5. gpu_cache 编译 → 禁用（`CMakeLists.txt` + Python 导入降级）
 - POSIX fallback 可用于无 GDS 设备节点环境下的功能调试。
 
 仍需重点验证：
 
-- 真机 cuFile 模式下 `cuFileDriverOpen()` 实际不再 fallback（理论上 `itrfs.ko` 已加载即可，待跑一次完整训练确认）。
-- DGL CUDA/Corex 版完整训练链路（gpu_cache 是否可随新 cooperative_groups.h 一起编译通过，需要重新验证 `%laneid` 问题是否已彻底解决）。
+- 真机 cuFile 模式下 `cuFileDriverOpen()` 实际不再 fallback（`itrfs.ko` 已加载，待跑一次完整训练确认）。
+- DGL CUDA/Corex 版完整训练链路（GIDS_DGLDataLoader + DGL GPU 采样 + IXFeatureStore）。
 - 单 NVMe 与多 NVMe 的实际 GDS 吞吐（与 POSIX fallback 对比）。
 - 多 SSD page-level striping 的正确性和性能。
 - 端到端训练结果与原版 GIDS / baseline 的精度一致性。
@@ -575,13 +579,16 @@ FEAT_FILE=/mnt/nvme0/node_feat.bin bash run.sh prepare-data
 |------|------|------|------|
 | Corex PyTorch 不认 `ix:0` | `RuntimeError: Expected one of cpu, cuda...` | Corex PyTorch 注册为 CUDA 设备 | ✅ 已修复：全部使用 `cuda:0` |
 | cuFile 初始化失败 | `cuFile driver init failed` | 未加载 `itrfs.ko` 或容器未映射 `/dev/itrfs` | ✅ 已解决：itrfs.ko 已加载，/dev/itrfs 已就绪 |
-| DGL CPU 版不可用 | `Device API cuda is not enabled` | pip 包未启用 CUDA | 源码编译 DGL CUDA 版 |
-| DGL `-Xcompiler` 错误 | `unknown argument: -fopenmp,-O2...` | `ixc` 不接受 nvcc 逗号格式 | ✅ 已修复：改 DGL `CUDA.cmake` |
+| DGL `-Xcompiler` 逗号格式 | `clang++: error: unknown argument: '-fopenmp,-O2,...'` | Corex `ixc` 不接受 nvcc 逗号分隔格式 | ✅ 已修复：改为逐个 `-Xcompiler` 参数 |
+| DGL `fp16.cuh` 重定义 | `error: redefinition of 'operator+'` | Corex 已提供 `__half` 运算符，DGL 重复定义 | ✅ 已修复：添加 `!defined(__IXCC__)` 守卫 |
+| CCCL variadic 函数 | `error: CUDA device code does not support variadic functions` | CCCL libcudacxx 的 C++20 concept fallback 使用变参 | ✅ 已修复：禁用 CCCL，使用 Corex 自带 cub/thrust |
+| DGL `omp.h` 找不到 | `fatal error: 'omp.h' file not found` | Corex clang++ 未自带 omp.h | ✅ 已修复：自动检测 GCC include 路径 |
+| DGL `array_iterator.h` CUB_INLINE | `call to __host__ function from __device__ function` | `CUB_INLINE` 只在 `__CUDA_ARCH__` 下展开，Corex 定义 `__IXCC__` | ✅ 已修复：添加 `|| defined(__IXCC__)` |
 | `meta_group_rank()` 缺失 | 编译 cooperative_groups 相关代码失败 | Corex 旧头文件缺 CUDA 11 API | ✅ 已修复：SWPM-918-gids 补丁已正式部署 |
-| `%laneid` 编译器后端不支持 | Corex llc 报 `unknown token` | 编译器后端缺 warp lane 寄存器映射 | 🔄 **可能已解决**：新 `cooperative_groups.h` 的 `meta_group_rank()` 改用 `thread_rank()/numThreads` 不再触发 `%laneid`，待重新编译 DGL gpu_cache 验证 |
-| `itrfs.ko` 源码重编译失败 | `stdarg.h: No such file or directory` | Kernel headers 5.4.0-216-generic 的 build 目录下缺少 GCC 提供的 `stdarg.h`（Linux ≥5.0 kernel 不再从 GCC 中复用该文件） | ⚠️ 新问题（2026-06-11）：仅影响重编译，现有 `.ko` 正常；修复方式：`make CC=gcc HOSTCC=gcc`，或在有完整工具链的环境中编译 |
-| IX-ML 与 Driver 版本不一致 | `ixsmi` 显示 `IX-ML: 4.4.0`，`Driver: 4.5.0` | ML 库（PyTorch wheel 等）未随驱动同步升级 | ⚠️ 当前状态：驱动 4.5.0，ML 库仍 4.4.0；若遇到运行时符号不兼容，需将 PyTorch wheel 升级到 `corex.4.5.0` 版本 |
-| SDK/驱动版本不一致 | 显存充足但 OOM | 运行时库符号/ABI 不匹配 | 统一 Corex 4.5.0 驱动、SDK、PyTorch wheel |
+| `%laneid` 编译器后端不支持 | Corex llc 报 `unknown token` | 编译器后端缺 warp lane 寄存器映射 | ❌ **编译器后端问题，确认无法通过源码级修复绕过**。gpu_cache 已禁用，不影响 GIDS 核心功能 |
+| `itrfs.ko` 源码重编译失败 | `stdarg.h: No such file or directory` | Kernel headers 5.4.0-216-generic 的 build 目录下缺少 GCC 提供的 `stdarg.h` | ⚠️ 仅影响重编译，现有 `.ko` 正常 |
+| IX-ML 与 Driver 版本不一致 | `ixsmi` 显示 `IX-ML: 4.4.0`，`Driver: 4.5.0` | ML 库未随驱动同步升级 | ⚠️ 若遇到运行时符号不兼容，需升级 PyTorch wheel 到 `corex.4.5.0` |
+| DGL gpu_cache 禁用 | `from dgl.cuda import GPUCache` 返回 None | gpu_cache 编译时禁用，Python 层自动降级 | ✅ 已处理：Python 层 `try/except` 导入，GPUCache=None，不影响训练 |
 
 ---
 

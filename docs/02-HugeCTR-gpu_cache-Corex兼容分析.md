@@ -5,6 +5,7 @@
 > - 独立仓库：`/root/GIDS_cufile/HugeCTR/gpu_cache/`
 > **上游仓库：** https://github.com/NVIDIA-Merlin/HugeCTR
 > **许可证：** Apache 2.0
+> **最后更新：** 2026-06-12（确认禁用，%laneid 编译器后端问题）
 
 ---
 
@@ -46,7 +47,7 @@ Set-Associative Cache (组相联缓存)
 | API | 归属 | 状态 |
 |-----|------|------|
 | `cooperative_groups::this_thread_block()` | CG 核心 | ✅ |
-| `cooperative_groups::tiled_partition<Size>()` | CG 核心 | ✅ |
+| `cooperative_groups::tiled_partition<Size>()` | CG 核心 | ✅ → 但后端仍生成 `%laneid` |
 | `cooperative_groups::this_grid()` | CG 核心 | ✅ |
 | `meta_group_rank()` | CG CUDA 11.0+ | ✅ SWPM-918-gids 补丁 |
 | `meta_group_size()` | CG CUDA 11.0+ | ✅ SWPM-918-gids 补丁 |
@@ -64,6 +65,8 @@ Set-Associative Cache (组相联缓存)
 gpu_cache 大量使用 `cooperative_groups::tiled_partition<>`，其底层依赖 warp 级操作。编译器后端（Corex LLVM fork 的 llc）需要将这些操作翻译为 GPU 指令，翻译过程中引用了 PTX 寄存器 `%laneid`（标识当前线程在其 warp 中的位置，0-31）。
 
 Corex 的 LLVM fork 未实现 `%laneid` 寄存器的代码生成映射。
+
+**关键澄清（2026-06-12）：** SWPM-918-gids 补丁通过 `thread_rank()/numThreads` 实现了 `meta_group_rank()` 的 API 层，但这只解决了 `meta_group_rank()` 和 `meta_group_size()` 函数调用的问题。`tiled_partition` 内部的 warp 级操作在编译器后端翻译时，仍会生成 `%laneid` PTX 寄存器引用。**这是编译器后端问题，无法通过源码级修复绕过。**
 
 ### 2.3 源码分析
 
@@ -107,7 +110,51 @@ namespace cg = cooperative_groups;
 
 ---
 
-## 4. 对 GIDS 的影响评估
+## 4. 当前处理方案：禁用 gpu_cache
+
+### 4.1 CMake 层面
+
+**DGL `CMakeLists.txt`：**
+
+```cmake
+# gpu_cache 编译块改为始终为 false
+if(USE_CUDA AND NOT USE_CUDA)  # DISABLED for Corex: %laneid PTX register
+  ...
+  cuda_add_library(gpu_cache STATIC ${gpu_cache_src})
+  ...
+endif()
+
+# 排除 gpu_cache.cu 源文件
+list(FILTER DGL_CUDA_SRC EXCLUDE REGEX "gpu_cache\\.cu$")
+```
+
+### 4.2 Python 层面
+
+**`python/dgl/cuda/__init__.py`：**
+```python
+try:
+    from .gpu_cache import GPUCache
+except ImportError:
+    GPUCache = None
+```
+
+**`python/dgl/cuda/gpu_cache.py`：**
+```python
+def _init_api():
+    ...
+    try:
+        _CAPI_DGLHeteroCacheCreate = _LIB.CAPI_DGLHeteroCacheCreate
+    except AttributeError:
+        raise ImportError("GPUCache is not available in this build of DGL")
+```
+
+### 4.3 对 GIDS 的影响：无
+
+GIDS 使用自己的 `IXFeatureStore`（cuFile → NVMe SSD），不依赖 HugeCTR gpu_cache。禁掉 gpu_cache 编译不影响 GIDS 的核心功能。
+
+---
+
+## 5. 对 GIDS 的影响评估
 
 ### 当前影响：无
 
@@ -115,7 +162,7 @@ GIDS 使用自己的 `IXFeatureStore`（cuFile → NVMe SSD），不依赖 HugeC
 
 ### 未来影响：两级缓存优化
 
-见 [GIDS HugeCTR GPU Cache 与两级缓存优化](../GIDS-HugeCTR-GPU-Cache与两级缓存优化.md)，gpu_cache 编译通过后：
+`%laneid` 支持后，可启用 GPU HBM + NVMe 两级缓存：
 
 | 方案 | 延迟 | 容量 | 适用数据 |
 |------|------|------|---------|
@@ -124,20 +171,22 @@ GIDS 使用自己的 `IXFeatureStore`（cuFile → NVMe SSD），不依赖 HugeC
 
 ---
 
-## 5. 相关工作
+## 6. 相关工作
 
 | 项目 | 内容 |
 |------|------|
 | Corex SDK 分支 | SWPM-918-gids（meta_group_rank 补丁） |
 | DGL 编译 | `/root/GIDS_cufile/dgl/build/` |
+| DGL 编译脚本 | `/root/GIDS_cufile/GIDS/build_dgl_corex.sh` |
 | 独立 HugeCTR | `/root/GIDS_cufile/HugeCTR/` |
 
 ---
 
-## 6. 参考
+## 7. 参考
 
 - [HugeCTR GitHub](https://github.com/NVIDIA-Merlin/HugeCTR)
 - [CUDA cooperative_groups 文档](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#cooperative-groups)
 - [DGL GPU Cache PR](https://github.com/dmlc/dgl/pull/6694)
 - [NVIDIA Merlin 文档](https://developer.nvidia.com/nvidia-merlin/hugectr)
+- [DGL Corex 兼容分析](./01-DGL-Corex兼容分析.md)
 - **PTX 指令级分析：** [03-gpu_cache-PTX指令清单与Corex兼容状态.md](./03-gpu_cache-PTX指令清单与Corex兼容状态.md)
