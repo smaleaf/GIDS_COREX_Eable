@@ -23,6 +23,7 @@ GIDS/products.*
 
 # ── 编译产物 ─────────────────────────────────
 corex_enable_bam/code/test_io_memory
+corex_enable_bam/code/test_io_memory_*
 corex_enable_bam/code/*.o
 
 # ── dgl 编译产物与第三方依赖 ──────────────────
@@ -37,3 +38,4 @@ dgl/third_party/
 *.csv.gz
 *.nc
 *.pack
+corex_enable_bam/code/test_io_memory
